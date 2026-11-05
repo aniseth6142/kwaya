@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kwaya — Choral Score Assistant</title>
+<style>
+/* ── Reset & Base ────────────────────────────────── */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0f0d19; --surface:#1a1628; --surface2:#23203a;
+  --border:#2f2a4a; --text:#e2daf0; --muted:#8f84b0;
+  --accent:#d4a76a; --accent2:#c4895e;
+  --green:#6bbf8a; --red:#cf6a7a; --gold:#d4a76a;
+  --radius:12px; --font:'Segoe UI',system-ui,-apple-system,sans-serif;
+  --mono:'SF Mono','Cascadia Code','JetBrains Mono',monospace;
+  --chat-max:760px;
+}
+html{background:var(--bg);color:var(--text);font-family:var(--font);font-size:15px;line-height:1.6;height:100%}
+body{height:100%;display:flex;flex-direction:column;max-width:var(--chat-max);margin:0 auto;padding:0 16px}
+::-webkit-scrollbar{width:5px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+::selection{background:var(--accent);color:#0f0d19}
+
+/* ── Header ─────────────────────────────────────── */
+.app-header{
+  display:flex;align-items:center;gap:10px;padding:14px 0 10px;
+  border-bottom:1px solid var(--border);flex-shrink:0;
+}
+.app-logo{font-size:22px;font-weight:700;letter-spacing:-0.3px;
+  background:linear-gradient(135deg,var(--gold),#e8c88a);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;
+}
+.app-logo small{font-size:12px;font-weight:400;-webkit-text-fill-color:var(--muted);color:var(--muted)}
+.app-tagline{color:var(--muted);font-size:12px;margin-left:auto}
+
+/* ── Chat Messages ──────────────────────────────── */
+.chat-area{flex:1;overflow-y:auto;padding:16px 0 8px;display:flex;flex-direction:column;gap:6px}
+.chat-area:empty::after{
+  content:'Send a message or upload a score to get started.';display:block;
+  text-align:center;color:var(--muted);font-size:14px;padding:60px 20px;
+}
+
+/* Message bubbles */
+.msg{display:flex;gap:10px;padding:10px 14px;border-radius:var(--radius);max-width:95%;animation:fadeIn .2s ease}
+@keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+
+.msg.user{background:var(--surface2);border:1px solid var(--border);margin-left:auto;flex-direction:row-reverse}
+.msg.user .avatar{color:var(--accent);font-size:18px;flex-shrink:0;width:28px;height:28px;display:flex;align-items:center;justify-content:center}
+.msg.assistant{background:var(--surface);border:1px solid transparent;margin-right:auto}
+.msg.assistant .avatar{color:var(--green);font-size:16px;flex-shrink:0;width:28px;height:28px;display:flex;align-items:center;justify-content:center}
+.msg.system{background:transparent;border:none;color:var(--muted);font-size:13px;text-align:center;padding:4px 14px;animation:pulse .3s ease}
+@keyframes pulse{0%{opacity:0.4}100%{opacity:1}}
+
+.msg .content{min-width:0;word-wrap:break-word;overflow-wrap:break-word}
+.msg .content p{margin-bottom:6px}
+.msg .content p:last-child{margin-bottom:0}
+.msg .content code{background:var(--surface2);padding:1px 6px;border-radius:4px;font-family:var(--mono);font-size:13px}
+.msg .content strong{color:var(--gold)}
+
+/* Typing indicator */
+.typing{display:flex;gap:10px;padding:10px 14px;align-items:center;margin-right:auto}
+.typing .dots{display:flex;gap:4px}
+.typing .dot{width:8px;height:8px;border-radius:50%;background:var(--muted);animation:bounce 1.2s infinite}
+.typing .dot:nth-child(2){animation-delay:.2s}
+.typing .dot:nth-child(3){animation-delay:.4s}
+@keyframes bounce{0%,80%,100%{transform:scale(.6)}40%{transform:scale(1)}}
+
+/* ── Rich content cards ─────────────────────────── */
+.rich-card{
+  background:var(--surface2);border:1px solid var(--border);border-radius:10px;
+  padding:14px;margin-top:8px;display:none;
+}
+.rich-card.open{display:block}
+
+/* Score summary */
+.score-summary{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.score-part{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 14px;flex:1;min-width:120px;text-align:center}
+.score-part .label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+.score-part .count{font-size:20px;font-weight:700;color:var(--gold);margin:2px 0}
+.score-part .sub{font-size:11px;color:var(--muted)}
+
+/* Solfege grid inside chat */
+.solfege-mini{display:flex;flex-wrap:wrap;gap:4px;margin-top:8px;max-height:200px;overflow-y:auto}
+.solfege-mini .sn{
+  font-size:13px;font-family:var(--mono);padding:3px 8px;
+  background:var(--surface);border-radius:6px;border:1px solid var(--border);
+  display:flex;flex-direction:column;align-items:center;gap:1px;
+}
+.solfege-mini .sn .s{font-weight:600;color:var(--accent)}
+.solfege-mini .sn .l{font-size:10px;color:var(--muted)}
+.solfege-mini .sn .p{font-size:9px;color:var(--muted)}
+.more-notes{color:var(--muted);font-size:12px;padding:8px;text-align:center}
+
+/* Audio players */
+.audio-grid{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+.audio-row{display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--surface);border-radius:8px;border:1px solid var(--border)}
+.audio-row .part-label{font-size:14px;font-weight:600;width:70px;flex-shrink:0}
+.audio-row audio{flex:1;height:32px}
+.audio-row .solo-btn{background:transparent;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer;transition:.15s}
+.audio-row .solo-btn:hover{border-color:var(--gold);color:var(--gold)}
+
+/* Export */
+.export-btn{display:inline-block;margin-top:8px;padding:8px 20px;background:var(--gold);color:#0f0d19;border:none;border-radius:20px;font-size:13px;font-weight:600;cursor:pointer;transition:.15s}
+.export-btn:hover{filter:brightness(1.1)}
+
+/* ── Input Area ─────────────────────────────────── */
+.input-area{
+  flex-shrink:0;padding:12px 0 20px;
+  border-top:1px solid var(--border);background:var(--bg);
+}
+.input-row{display:flex;gap:8px;align-items:flex-end}
+.input-row textarea{
+  flex:1;resize:none;padding:10px 14px;border-radius:var(--radius);
+  border:1px solid var(--border);background:var(--surface);
+  color:var(--text);font-family:var(--font);font-size:14px;line-height:1.4;
+  min-height:44px;max-height:120px;transition:.15s;
+}
+.input-row textarea:focus{outline:none;border-color:var(--accent)}
+.input-row textarea::placeholder{color:var(--muted)}
+.attach-btn,.send-btn{
+  width:44px;height:44px;border-radius:50%;border:1px solid var(--border);
+  background:var(--surface2);color:var(--text);font-size:18px;
+  cursor:pointer;transition:.15s;display:flex;align-items:center;justify-content:center;flex-shrink:0;
+}
+.attach-btn:hover,.send-btn:hover{border-color:var(--gold);background:var(--surface)}
+.send-btn{background:var(--gold);color:#0f0d19;border-color:var(--gold)}
+.send-btn:hover{filter:brightness(1.1)}
+.send-btn:disabled{opacity:.4;cursor:not-allowed}
+.attach-btn input{display:none}
+
+/* Drag overlay */
+.drag-overlay{
+  display:none;position:fixed;inset:0;z-index:100;
+  background:rgba(15,13,25,0.85);backdrop-filter:blur(4px);
+  align-items:center;justify-content:center;flex-direction:column;gap:12px;
+}
+.drag-overlay.active{display:flex}
+.drag-overlay .icon{font-size:48px}
+.drag-overlay .text{font-size:18px;font-weight:600;color:var(--gold)}
+
+/* ── Mobile ─────────────────────────────────────── */
+@media(max-width:500px){
+  body{padding:0 10px}
+  .msg{max-width:100%}
+  .score-part{min-width:80px}
+}
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<header class="app-header">
+  <div class="app-logo">kwaya<small>β</small></div>
+  <span class="app-tagline">choral score assistant</span>
+</header>
+
+<!-- Chat Messages -->
+<div class="chat-area" id="chatArea"></div>
+
+<!-- Drag overlay -->
+<div class="drag-overlay" id="dragOverlay">
+  <div class="icon">🎼</div>
+  <div class="text">Drop your sheet music here</div>
+  <div style="color:var(--muted);font-size:14px">PDF or PNG · SATB choral scores</div>
+</div>
+
+<!-- Input Area -->
+<div class="input-area">
+  <div class="input-row">
+    <label class="attach-btn" title="Upload sheet music (PDF/PNG)">
+      📎
+      <input type="file" id="fileInput" accept=".pdf,.png,.jpg,.jpeg,.tiff">
+    </label>
+    <textarea id="msgInput" rows="1" placeholder="Type a message or upload a score..." 
+      onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage()}"></textarea>
+    <button class="send-btn" id="sendBtn" onclick="sendMessage()" title="Send">➤</button>
+  </div>
+</div>
+
+<script>
+// ════════════════════════════════════════════════════
+//  KWAYA — Chat Interface
+// ════════════════════════════════════════════════════
+
+const API = window.location.origin;
+let state = { scoreId: null, score: null, busy: false, synthCache: {} };
+
+const PARTS = {soprano:'Soprano', alto:'Alto', tenor:'Tenor', bass:'Bass'};
+const COLORS = {soprano:'#e8c88a', alto:'#c4895e', tenor:'#6bbf8a', bass:'#4a8fc9'};
+
+// ── Init ───────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  // Auto-grow textarea
+  const ta = document.getElementById('msgInput');
+  ta.addEventListener('input', () => {
+    ta.style.height = 'auto';
+    ta.style.height = Math.min(ta.scrollHeight, 120) + 'px';
+  });
+
+  // File upload
+  setupFileUpload();
+
+  // Show welcome message
+  addMessage('assistant', getWelcomeHTML());
+
+  // Focus input
+  setTimeout(() => ta.focus(), 300);
+});
+
+function getWelcomeHTML(){
+  return `<p>👋 <strong>Karibu Kwaya!</strong> I'm your choral score assistant.</p>
+  <p>Try these to get started:</p>
+  <p>• Upload a score <strong>📎</strong> (PNG/PDF)<br>
+  • Say <strong><code>load demo</code></strong> to try the built-in Swahili hymn<br>
+  • Say <strong><code>synthesize</code></strong> to hear the choir<br>
+  • Ask me anything about the score!</p>`;
+}
+
+// ── File Upload ────────────────────────────────────
+function setupFileUpload(){
+  const input = document.getElementById('fileInput');
+  input.addEventListener('change', () => {
+    if(input.files.length) handleFile(input.files[0]);
+  });
+
+  // Drag & drop on whole page
+  const overlay = document.getElementById('dragOverlay');
+  document.addEventListener('dragover', e => {
+    e.preventDefault();
+    if(e.dataTransfer.types.includes('Files')) overlay.classList.add('active');
+  });
+  document.addEventListener('dragleave', e => {
+    if(!e.relatedTarget || e.relatedTarget.closest('body') === null)
+      overlay.classList.remove('active');
+  });
+  document.addEventListener('drop', e => {
+    e.preventDefault();
+    overlay.classList.remove('active');
+    if(e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+  });
+}
+
+async function handleFile(file){
+  const ext = file.name.split('.').pop().toLowerCase();
+  if(!['pdf','png','jpg','jpeg','tiff'].includes(ext)){
+    addMessage('assistant', `❌ Unsupported format: <code>.${ext}</code>. Use PDF, PNG, or JPEG.`);
+    return;
+  }
+
+  addMessage('user', `📄 Uploading <strong>${file.name}</strong>...`);
+
+  const form = new FormData();
+  form.append('file', file);
+
+  try {
+    const resp = await fetch(`${API}/api/upload`, {method:'POST', body:form});
+    const data = await resp.json();
+    state.scoreId = data.score_id;
+
+    addMessage('system', `📄 Received <strong>${file.name}</strong> — processing...`);
+
+    // Process the score
+    const procForm = new FormData();
+    procForm.append('score_id', state.scoreId);
+    const procResp = await fetch(`${API}/api/process`, {method:'POST', body:procForm});
+    const procData = await procResp.json();
+
+    if(procData.status === 'success' && procData.voices && procData.voices.length > 0){
+      state.score = procData;
+      renderScoreInChat('✅ Score read successfully!');
+    } else {
+      addMessage('system', `⚠️ ${procData.message || 'Score uploaded but OMR could not read all notes.'}`);
+      // Still try to work with what we have
+      if(procData.voices && procData.voices.length > 0){
+        state.score = procData;
+        renderScoreInChat('⚠️ Partial score loaded');
+      } else {
+        addMessage('assistant', 'The OMR couldn\'t detect notes automatically. Try the <strong>Demo score</strong> instead (say <code>load demo</code>), or upload a clearer scan.');
+      }
+    }
+  } catch(e) {
+    addMessage('assistant', `❌ Upload failed: ${e.message}. Try <code>load demo</code> instead.`);
+  }
+}
+
+// ── Chat Messages ─────────────────────────────────
+function addMessage(role, html){
+  const area = document.getElementById('chatArea');
+  const div = document.createElement('div');
+  div.className = `msg ${role}`;
+
+  const avatar = document.createElement('span');
+  avatar.className = 'avatar';
+  avatar.textContent = role === 'user' ? '👤' : role === 'system' ? '○' : '🎵';
+
+  const content = document.createElement('div');
+  content.className = 'content';
+  content.innerHTML = html;
+
+  div.appendChild(avatar);
+  div.appendChild(content);
+  area.appendChild(div);
+  area.scrollTop = area.scrollHeight;
+}
+
+function showTyping(){
+  const area = document.getElementById('chatArea');
+  const div = document.createElement('div');
+  div.className = 'typing';
+  div.id = 'typingIndicator';
+  div.innerHTML = `<span style="color:var(--muted);font-size:13px">Working</span>
+    <div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>`;
+  area.appendChild(div);
+  area.scrollTop = area.scrollHeight;
+}
+
+function hideTyping(){
+  const el = document.getElementById('typingIndicator');
+  if(el) el.remove();
+}
+
+function addRichCard(html){
+  const area = document.getElementById('chatArea');
+  const card = document.createElement('div');
+  card.className = 'rich-card open';
+  card.innerHTML = html;
+  area.appendChild(card);
+  area.scrollTop = area.scrollHeight;
+  return card;
+}
+
+// ── Render Score in Chat ──────────────────────────
+function renderScoreInChat(title){
+  const s = state.score;
+  if(!s) return;
+
+  // Build voice summary cards
+  let partsHTML = '';
+  let totalNotes = 0;
+  if(s.voices) s.voices.forEach(v => {
+    totalNotes += v.notes ? v.notes.length : 0;
+    const color = COLORS[v.part] || '#d4a76a';
+    const beats = v.notes ? v.notes.reduce((sum,n) => sum + (n.duration_float||1), 0) : 0;
+    partsHTML += `<div class="score-part">
+      <div class="label" style="color:${color}">${PARTS[v.part] || v.part}</div>
+      <div class="count">${v.notes ? v.notes.length : 0}</div>
+      <div class="sub">${v.notes ? v.notes.length : 0} notes</div>
+    </div>`;
+  });
+
+  let msg = `<p>${title}</p>
+    <p style="font-size:13px;color:var(--muted)">${s.title || 'Untitled'} · ${s.key_signature?.description || 'C major'} · ${s.time_signature?.numerator||4}/${s.time_signature?.denominator||4} · ${totalNotes} notes</p>
+    <div class="score-summary">${partsHTML}</div>`;
+
+  // Add voice tabs and solfege
+  msg += `<div style="margin-top:12px"><div style="display:flex;gap:4px;flex-wrap:wrap" id="voiceTabs">`;
+  if(s.voices) s.voices.forEach(v => {
+    msg += `<button class="voice-tab" data-part="${v.part}" onclick="showSolfege('${v.part}')"
+      style="padding:6px 14px;font-size:12px;font-weight:600;border-radius:16px;
+      border:1px solid var(--border);background:var(--surface);color:var(--muted);
+      cursor:pointer;transition:.15s">${PARTS[v.part] || v.part}</button>`;
+  });
+  msg += `</div><div id="solfegeContainer" style="margin-top:8px"></div></div>`;
+
+  addMessage('assistant', msg);
+
+  // Show first voice solfege by default
+  if(s.voices && s.voices.length > 0) showSolfege(s.voices[0].part);
+}
+
+function showSolfege(part){
+  const s = state.score;
+  if(!s || !s.voices) return;
+
+  // Highlight active tab
+  document.querySelectorAll('.voice-tab').forEach(t => {
+    t.style.background = t.dataset.part === part ? 'var(--gold)' : 'var(--surface)';
+    t.style.color = t.dataset.part === part ? '#0f0d19' : 'var(--muted)';
+    t.style.borderColor = t.dataset.part === part ? 'var(--gold)' : 'var(--border)';
+  });
+
+  const voice = s.voices.find(v => v.part === part);
+  if(!voice || !voice.notes) {
+    document.getElementById('solfegeContainer').innerHTML = '<div style="color:var(--muted);font-size:13px;padding:8px">No notes for this voice</div>';
+    return;
+  }
+
+  // Show notes in a condensed grid
+  let html = '<div class="solfege-mini">';
+  let lastMeasure = 0;
+  voice.notes.forEach(n => {
+    const mLabel = n.measure !== lastMeasure ? `m.${n.measure}&nbsp;` : '';
+    lastMeasure = n.measure;
+    html += `<div class="sn">
+      <span class="s">${n.solfege || '?'}</span>
+      ${n.lyric ? `<span class="l">${n.lyric}</span>` : ''}
+      <span class="p">${mLabel}${n.pitch || ''}</span>
+    </div>`;
+  });
+  html += '</div>';
+
+  // Add lyrics input for this voice
+  html += `<div style="margin-top:8px;display:flex;gap:6px;align-items:center">
+    <input type="text" id="lyricsInput" placeholder="Comma-separated lyrics (e.g. Mun-gu,Ni,Ba-ba)"
+      style="flex:1;padding:6px 10px;border-radius:8px;border:1px solid var(--border);
+      background:var(--surface);color:var(--text);font-size:12px"
+      value="${voice.notes.map(n=>n.lyric||'').join(',')}">
+    <button class="solo-btn" onclick="updateLyrics('${part}')" style="padding:6px 12px">Apply</button>
+  </div>`;
+
+  document.getElementById('solfegeContainer').innerHTML = html;
+}
+
+async function updateLyrics(part){
+  const input = document.getElementById('lyricsInput') || document.querySelector('#solfegeContainer input');
+  if(!input) return;
+  const lyrics = input.value.split(',').map(s => s.trim());
+  try {
+    const form = new FormData();
+    form.append('score_id', state.scoreId);
+    form.append('part', part);
+    form.append('lyrics_json', JSON.stringify(lyrics));
+    const resp = await fetch(`${API}/api/lyrics`, {method:'POST', body:form});
+    if(!resp.ok) throw new Error(await resp.text());
+    // Reload score
+    const sr = await fetch(`${API}/api/score/${state.scoreId}`);
+    state.score = await sr.json();
+    showSolfege(part);
+    addMessage('system', `✅ Lyrics updated for ${PARTS[part] || part}`);
+  } catch(e) {
+    addMessage('assistant', `❌ Lyrics update failed: ${e.message}`);
+  }
+}
+
+// ── Send Message ──────────────────────────────────
+async function sendMessage(){
+  if(state.busy) return;
+  const ta = document.getElementById('msgInput');
+  const msg = ta.value.trim();
+  if(!msg) return;
+
+  // Add user message
+  addMessage('user', msg);
+  ta.value = '';
+  ta.style.height = 'auto';
+
+  // Show typing
+  state.busy = true;
+  document.getElementById('sendBtn').disabled = true;
+  showTyping();
+
+  try {
+    const resp = await fetch(`${API}/api/chat`, {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        message: msg,
+        score_id: state.scoreId || 'demo_001'
+      })
+    });
+    const data = await resp.json();
+    hideTyping();
+
+    // Handle response by type
+    switch(data.type){
+      case 'score_loaded':
+        state.score = data.data.score;
+        state.scoreId = data.data.score_id;
+        state.synthCache = {};
+        renderScoreInChat(data.content);
+        break;
+
+      case 'audio_ready':
+        state.synthCache = data.data.files;
+        addMessage('assistant', data.content);
+        renderAudioPlayers(data.data.files);
+        break;
+
+      case 'corrected':
+        // Reload score to reflect changes
+        addMessage('assistant', data.content);
+        try {
+          const sr = await fetch(`${API}/api/score/${state.scoreId}`);
+          state.score = await sr.json();
+          // Refresh solfege if showing
+          const currentPart = document.querySelector('.voice-tab')?.dataset?.part;
+          if(currentPart && state.score) showSolfege(currentPart);
+        } catch(e) {}
+        break;
+
+      case 'export':
+        addMessage('assistant', data.content);
+        // Add download button
+        const card = addRichCard(`
+          <a href="data:application/xml;charset=utf-8,${encodeURIComponent(data.data.xml)}"
+             download="${data.data.filename}" class="export-btn">📄 Download ${data.data.filename}</a>
+        `);
+        break;
+
+      default:
+        addMessage('assistant', data.content);
+    }
+  } catch(e) {
+    hideTyping();
+    addMessage('assistant', `❌ Error: ${e.message}`);
+  }
+
+  state.busy = false;
+  document.getElementById('sendBtn').disabled = false;
+  ta.focus();
+}
+
+// ── Audio Players ─────────────────────────────────
+function renderAudioPlayers(files){
+  const parts = Object.keys(files);
+  if(!parts.length) return;
+
+  // Ensure correct WAV paths (prepend API base)
+  let html = '<div class="audio-grid">';
+  parts.forEach(p => {
+    const url = API + files[p];
+    const color = COLORS[p] || '#d4a76a';
+    html += `<div class="audio-row">
+      <span class="part-label" style="color:${color}">${PARTS[p] || p}</span>
+      <audio controls preload="none"><source src="${url}" type="audio/wav"></audio>
+      <a href="${url}" download class="solo-btn">⬇</a>
+    </div>`;
+  });
+  html += '</div>';
+
+  // Add tutti button if >1 part
+  if(parts.length > 1){
+    html += `<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
+      <button class="export-btn" onclick="playAll()" style="font-size:12px;padding:6px 16px">🎵 Play All Together</button>
+    </div>`;
+  }
+
+  addRichCard(html);
+}
+
+function playAll(){
+  const audios = document.querySelectorAll('.audio-grid audio');
+  // Play all at once (browser may require user gesture)
+  audios.forEach(a => {
+    a.currentTime = 0;
+    a.play().catch(() => {});
+  });
+}
+
+// ── Keyboard shortcut ─────────────────────────────
+document.addEventListener('keydown', e => {
+  if(e.key === 'Enter' && !e.shiftKey && document.activeElement === document.getElementById('msgInput')){
+    e.preventDefault();
+    sendMessage();
+  }
+});
+</script>
+</body>
+</html>

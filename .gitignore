@@ -1,0 +1,13 @@
+# Kwaya — Choral Score Assistant
+
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+data/uploads/*
+data/output/*
+!data/uploads/.gitkeep
+!data/output/.gitkeep
+soundfonts/*.sf2
+.DS_Store
