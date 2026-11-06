@@ -101,8 +101,9 @@ async def upload_score(file: UploadFile = File(...)):
     """Upload a PDF or PNG score image."""
     # Validate file type
     ext = Path(file.filename).suffix.lower()
-    if ext not in ('.pdf', '.png', '.jpg', '.jpeg', '.tiff', '.tif'):
-        raise HTTPException(400, f"Unsupported format: {ext}. Use PDF, PNG, or JPEG.")
+    if ext not in ('.pdf', '.png', '.jpg', '.jpeg', '.tiff', '.tif',
+                   '.musicxml', '.xml', '.mxl'):
+        raise HTTPException(400, f"Unsupported format: {ext}. Use PDF, PNG, JPEG, or MusicXML.")
 
     score_id = hashlib.md5(file.filename.encode()).hexdigest()[:12]
 
@@ -122,44 +123,214 @@ async def upload_score(file: UploadFile = File(...)):
 
 @app.post("/api/process")
 async def process_score(score_id: str = Form(...)):
-    """Run OMR + solfege processing."""
+    """Run OMR + solfege processing.
+
+    Supports:
+    • Already-processed scores (return cached)
+    • MusicXML uploads (parsed via music21 — most reliable)
+    • PNG scores (OpenCV OMR — experimental, works on clean scans)
+    """
     # Check for existing score
     if score_id in scores and scores[score_id].voices:
         return _pydantic_to_dict(scores[score_id])
 
     # Try to find uploaded file
-    for ext in ('.pdf', '.png', '.jpg', '.jpeg', '.tiff'):
-        path = UPLOAD_DIR / f"{score_id}{ext}"
-        if path.exists():
+    path = None
+    ext_found = None
+    for ext in ('.musicxml', '.xml', '.mxl', '.pdf', '.png', '.jpg', '.jpeg', '.tiff'):
+        p = UPLOAD_DIR / f"{score_id}{ext}"
+        if p.exists():
+            path = p
+            ext_found = ext
             break
-    else:
-        path = None
 
-    if path and path.suffix.lower() == '.png':
-        # Run OMR pipeline
+    if not path:
+        placeholder = ScoreResult(
+            status="partial", message="No uploaded file found for this score ID.",
+            score_id=score_id
+        )
+        scores[score_id] = placeholder
+        return _pydantic_to_dict(placeholder)
+
+    # ── MusicXML path (most reliable) ──────────────────────────────
+    if ext_found in ('.musicxml', '.xml', '.mxl'):
+        try:
+            from music21 import converter, stream, note, chord, clef, key, meter, pitch as m21_pitch
+            m21_score = converter.parse(str(path))
+
+            result = ScoreResult(
+                title=path.stem.replace("_", " ").replace("-", " ").title(),
+                status="success", score_id=score_id
+            )
+
+            # Detect key and time from first part
+            first_part = list(m21_score.parts)[0] if m21_score.parts else None
+            if first_part:
+                ks = first_part.recurse().getElementsByClass(key.Key).first()
+                if ks:
+                    result.key_signature = KeySignature(
+                        fifths=ks.sharps,
+                        mode=ks.mode,
+                        description=str(ks)
+                    )
+                ts = first_part.recurse().getElementsByClass(meter.TimeSignature).first()
+                if ts:
+                    result.time_signature = TimeSignature(
+                        numerator=ts.numerator, denominator=ts.denominator
+                    )
+
+            # Extract each part as a voice
+            voice_order = [VoicePart.SOPRANO, VoicePart.ALTO,
+                           VoicePart.TENOR, VoicePart.BASS]
+            max_measure = 0
+
+            for idx, m21_part in enumerate(m21_score.parts):
+                if idx >= 4:
+                    break
+                part = voice_order[idx]
+
+                # Determine clef
+                clef_found = ClefType.TREBLE
+                c = m21_part.recurse().getElementsByClass(clef.Clef).first()
+                if c:
+                    if c.name.lower() == 'bass':
+                        clef_found = ClefType.BASS
+
+                staff_idx = 0 if part in (VoicePart.SOPRANO, VoicePart.ALTO) else 1
+
+                note_list = []
+                for el in m21_part.recurse().notesAndRests:
+                    if el.isRest:
+                        continue
+                    if el.isChord:
+                        # Chord: take top note for soprano/tenor, bottom for alto/bass
+                        notes_in_chord = el.notes
+                        if part in (VoicePart.SOPRANO, VoicePart.TENOR):
+                            chosen = notes_in_chord[-1]  # highest
+                        else:
+                            chosen = notes_in_chord[0]   # lowest
+                    else:
+                        chosen = el
+
+                    dur_float = el.duration.quarterLength
+                    if dur_float >= 3.0:
+                        dur_type = "whole"
+                    elif dur_float >= 1.5:
+                        dur_type = "half"
+                    elif dur_float >= 0.75:
+                        dur_type = "quarter"
+                    elif dur_float >= 0.375:
+                        dur_type = "eighth"
+                    else:
+                        dur_type = "16th"
+
+                    # Get measure number
+                    meas = 1
+                    try:
+                        meas = max(1, int(el.measureNumber or 1))
+                    except:
+                        pass
+                    max_measure = max(max_measure, meas)
+
+                    # Lyric
+                    lyric = ""
+                    try:
+                        from music21 import lyrics
+                        for ly in el.lyrics:
+                            if ly and ly.text:
+                                lyric = ly.text
+                                break
+                    except:
+                        pass
+
+                    nd = NoteData(
+                        pitch=chosen.nameWithOctave,
+                        midi=chosen.pitch.midi,
+                        duration_type=dur_type,
+                        duration_float=dur_float,
+                        stem_direction="up" if part in (VoicePart.SOPRANO, VoicePart.TENOR) else "down",
+                        voice=part,
+                        lyric=lyric,
+                        measure=meas,
+                        note_id=f"{part.value}_{meas}_{len(note_list)}"
+                    )
+                    note_list.append(nd)
+
+                vl = VoiceLine(
+                    part=part,
+                    notes=note_list,
+                    staff=staff_idx,
+                    clef=clef_found,
+                    lyrics=[n.lyric for n in note_list]
+                )
+                result.voices.append(vl)
+
+            result.measures = max_measure
+            result = compute_solfege_for_score(result)
+            scores[score_id] = result
+            return _pydantic_to_dict(result)
+
+        except Exception as e:
+            import traceback
+            return JSONResponse(
+                status_code=422,
+                content={"status": "error",
+                         "message": f"MusicXML parsing failed: {e}",
+                         "detail": traceback.format_exc(),
+                         "suggestion": "Check the file format or try the Demo score."}
+            )
+
+    # ── PDF path (render first page as image, then run OMR) ────────
+    if ext_found == '.pdf':
+        try:
+            import pymupdf
+            doc = pymupdf.open(str(path))
+            first_page = doc[0]
+            pix = first_page.get_pixmap(dpi=200)
+            png_path = path.with_suffix('.png')
+            pix.save(str(png_path))
+            # Fall through to PNG OMR below
+            path = png_path
+            ext_found = '.png'
+        except Exception as e:
+            return JSONResponse(
+                status_code=422,
+                content={"status": "error",
+                         "message": f"PDF rendering failed: {str(e)}",
+                         "suggestion": "Try uploading as MusicXML or use the Demo score."}
+            )
+
+    # ── PNG path (OpenCV OMR — experimental) ──────────────────────
+    if ext_found == '.png':
         try:
             from omr.engine import run_pipeline
             result = run_pipeline(str(path))
             result.score_id = score_id
-            if result.status == "success":
-                # Compute solfege
+            if result.status == "success" and result.voices and sum(len(v.notes) for v in result.voices) > 5:
                 result = compute_solfege_for_score(result)
                 scores[score_id] = result
                 return _pydantic_to_dict(result)
             else:
-                # Fall back to demo-based placeholder
-                pass
+                # OMR failed or too few notes — return helpful message
+                return JSONResponse(
+                    status_code=422,
+                    content={"status": "error",
+                             "message": "OMR could not reliably detect notes from this image.",
+                             "suggestion": "Export the score as MusicXML from notation software and upload that instead. Or try the Demo score."}
+                )
         except Exception as e:
             return JSONResponse(
                 status_code=422,
-                content={"status": "error", "message": f"OMR failed: {str(e)}",
-                         "suggestion": "Try using the Demo score to test the pipeline."}
+                content={"status": "error",
+                         "message": f"OMR failed: {str(e)}",
+                         "suggestion": "Export the score as MusicXML from notation software and upload that instead."}
             )
 
-    # If no file or processing failed, return a skeleton
+    # ── Fallback ──────────────────────────────────────────────────
     placeholder = ScoreResult(
         status="partial",
-        message="Score uploaded. OMR processing is available for PNG. Use 'Load Demo' to test.",
+        message=f"Uploaded {ext_found} — direct OMR is only available for PNG scores. "
+                "MusicXML files parse instantly. Try the Demo score to test the full pipeline.",
         score_id=score_id
     )
     scores[score_id] = placeholder

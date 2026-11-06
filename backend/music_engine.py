@@ -92,7 +92,13 @@ class SolfegeEngine:
     def __init__(self, key_sig: KeySignature, mode: str = "major"):
         self.fifths = key_sig.fifths
         self.mode = mode
-        self.key_obj = key.Key(self.fifths)
+        # music21 v10.5: key.Key() expects a pitch name string
+        # Circle of fifths: fifths -> tonic name
+        # -7=Cb, -6=Gb, -5=Db, -4=Ab, -3=Eb, -2=Bb, -1=F, 0=C, 1=G, 2=D, 3=A, 4=E, 5=B, 6=F#, 7=C#
+        tonic_by_fifths = ["Cb", "Gb", "Db", "Ab", "Eb", "Bb", "F",
+                           "C", "G", "D", "A", "E", "B", "F#", "C#"]
+        tonic_name = tonic_by_fifths[self.fifths + 7] if -7 <= self.fifths <= 7 else "C"
+        self.key_obj = key.Key(tonic_name)
         
         # Build scale
         if mode == "minor":
@@ -230,8 +236,11 @@ class ScoreBuilder:
 
     def _setup_score(self):
         """Create the basic score structure."""
-        # Key signature
-        ks = key.Key(self.key_sig.fifths)
+        # Key signature (music21 v10.5 needs a tonic name string)
+        tonic_by_fifths = ["Cb", "Gb", "Db", "Ab", "Eb", "Bb", "F",
+                           "C", "G", "D", "A", "E", "B", "F#", "C#"]
+        tonic_name = tonic_by_fifths[self.key_sig.fifths + 7] if -7 <= self.key_sig.fifths <= 7 else "C"
+        ks = key.Key(tonic_name)
         
         # Time signature
         ts = meter.TimeSignature(f"{self.time_sig.numerator}/{self.time_sig.denominator}")
