@@ -433,8 +433,16 @@ async def get_audio(score_id: str, part: str):
     if not wav_path.exists():
         raise HTTPException(404, f"Audio not found for {part}. Synthesize first.")
 
-    return FileResponse(str(wav_path), media_type="audio/wav",
-                        filename=f"{score_id}_{part}.wav")
+    # Read the file and return raw bytes (FileResponse has issues on Windows)
+    try:
+        data = wav_path.read_bytes()
+        return Response(content=data, media_type="audio/wav",
+                        headers={
+                            "Content-Disposition": f'inline; filename="{score_id}_{part}.wav"',
+                            "Content-Length": str(len(data))
+                        })
+    except Exception as e:
+        raise HTTPException(500, f"Failed to read audio: {e}")
 
 
 @app.get("/api/demo")
