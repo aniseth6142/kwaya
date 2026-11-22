@@ -12,7 +12,7 @@ import { execSync } from 'child_process';
 import sharp from 'sharp';
 import { parseMusicXML, ParsedScore } from './music-parser';
 
-const VISION_MODEL = 'google/gemini-2.0-flash-001';
+const VISION_MODEL = 'google/gemini-2.5-flash-lite';
 
 export interface OMRResult {
   ok: boolean;
