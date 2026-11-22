@@ -91,7 +91,8 @@ async function preprocessImage(filePath: string): Promise<string> {
 // ── PDF → PNG via Python PyMuPDF ──────────────────────────────────
 
 async function pdfToPng(pdfPath: string): Promise<string> {
-  const scriptPath = path.resolve(__dirname, '..', 'scripts', 'pdf-to-png.py');
+  // __dirname is not available in ES modules — use process.cwd() instead
+  const scriptPath = path.resolve(process.cwd(), 'scripts', 'pdf-to-png.py');
   const outPath = pdfPath.replace('.pdf', '_page1.png');
 
   if (!fs.existsSync(scriptPath))
@@ -147,8 +148,6 @@ async function callVisionModel(
     return { ok: false, error: `Vision API call failed: ${e.message}` };
   }
 }
-
-// ── Prompt & Response parsing ──────────────────────────────────────
 
 function buildVisionPrompt(): string {
   return `You are a music transcription AI. Transcribe this sheet music image into valid MusicXML (score-partwise version 4.0).
