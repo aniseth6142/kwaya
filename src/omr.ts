@@ -99,7 +99,7 @@ async function pdfToPng(pdfPath: string): Promise<string> {
     throw new Error(`PDF helper not found at ${scriptPath}`);
 
   try {
-    execSync(`python3 "${scriptPath}" "${pdfPath}" "${outPath}"`, { stdio: 'pipe', timeout: 30000 });
+    execSync(`python "${scriptPath}" "${pdfPath}" "${outPath}"`, { stdio: 'pipe', timeout: 30000 });
   } catch (e: any) {
     throw new Error(`PDF to PNG conversion failed: ${e.stderr?.toString() || e.message}`);
   }
