@@ -43,6 +43,38 @@ const SUPPORTED_MIME: Record<string, string> = {
   '.pdf': 'application/pdf',
 };
 
+// ── Find ffmpeg (Windows-safe) ─────────────────────────────────────
+
+let _ffmpegPath: string | null = null;
+
+function resolveFfmpeg(): string {
+  if (_ffmpegPath) return _ffmpegPath;
+
+  // Try where command (Windows)
+  try {
+    const out = execSync('where ffmpeg 2>NUL', { stdio: 'pipe', timeout: 5000, encoding: 'utf-8' });
+    const line = out.split('\n')[0].trim();
+    if (line) {
+      _ffmpegPath = line;
+      return _ffmpegPath;
+    }
+  } catch { /* not on PATH */ }
+
+  // Known install locations
+  const candidates = [
+    'C:\\Users\\HomePC\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\ffmpeg-8.1.2-full_build\\bin\\ffmpeg.exe',
+    'ffmpeg',
+  ];
+
+  for (const c of candidates) {
+    if (c === 'ffmpeg') { _ffmpegPath = 'ffmpeg'; return _ffmpegPath; }
+    if (fs.existsSync(c)) { _ffmpegPath = c; return _ffmpegPath; }
+  }
+
+  _ffmpegPath = 'ffmpeg';
+  return _ffmpegPath;
+}
+
 // ── Main OMR entry point ───────────────────────────────────────────
 
 export async function transcribeImage(filePath: string): Promise<OMRResult> {
@@ -58,12 +90,10 @@ export async function transcribeImage(filePath: string): Promise<OMRResult> {
     let imageBuffer: Buffer;
 
     if (ext === '.pdf') {
-      // Convert PDF first page to PNG
       processedPath = await pdfToPng(filePath);
       imageBuffer = fs.readFileSync(processedPath);
       if (processedPath !== filePath) fs.unlinkSync(processedPath);
     } else {
-      // Preprocess image for better OCR
       processedPath = await preprocessImage(filePath);
       imageBuffer = fs.readFileSync(processedPath);
       if (processedPath !== filePath) fs.unlinkSync(processedPath);
@@ -83,7 +113,6 @@ export async function transcribeImage(filePath: string): Promise<OMRResult> {
       return { ok: false, error: 'AI returned no MusicXML content' };
     }
 
-    // Parse MusicXML into our internal format
     let parsed: ParsedScore;
     try {
       parsed = await parseMusicXML(musicXML);
@@ -119,7 +148,6 @@ async function preprocessImage(filePath: string): Promise<string> {
 
   let pipeline = img.png();
 
-  // Resize if larger than 2048px on longest side (model limits)
   const maxDim = 2048;
   const w = metadata.width || maxDim;
   const h = metadata.height || maxDim;
@@ -138,26 +166,33 @@ async function preprocessImage(filePath: string): Promise<string> {
   return tempPath;
 }
 
-/**
- * Convert first page of PDF to PNG using ffmpeg.
- */
-async function pdfToPng(pdfPath: string): Promise<string> {
-  const outPath = pdfPath.replace('.pdf', '_page1.png');
+// ── PDF → PNG (Windows ffmpeg) ────────────────────────────────────
 
+async function pdfToPng(pdfPath: string): Promise<string> {
+  const ffmpeg = resolveFfmpeg();
+  const outPath = pdfPath.replace('.pdf', '_page1.png');
+  const shellQuote = (s: string) => `"${s}"`;
+
+  // Attempt 1: with density flag (better for vector PDFs)
   try {
     execSync(
-      `ffmpeg -y -i "${pdfPath}" -vf "scale=2048:-1" -frames:v 1 "${outPath}" 2>/dev/null`,
+      `${shellQuote(ffmpeg)} -y -density 300 -i ${shellQuote(pdfPath)} -vf "scale=2048:-1" -frames:v 1 ${shellQuote(outPath)}`,
       { stdio: 'pipe', timeout: 30000 }
     );
-  } catch {
-    execSync(
-      `ffmpeg -y -density 300 -i "${pdfPath}" -vf "scale=2048:-1" -frames:v 1 "${outPath}" 2>/dev/null`,
-      { stdio: 'pipe', timeout: 30000 }
-    );
-  }
+    if (fs.existsSync(outPath) && fs.statSync(outPath).size > 100) return outPath;
+  } catch { /* fall through */ }
 
-  if (!fs.existsSync(outPath)) {
-    throw new Error('Failed to convert PDF to image. Ensure the PDF is not encrypted.');
+  // Attempt 2: without density
+  execSync(
+    `${shellQuote(ffmpeg)} -y -i ${shellQuote(pdfPath)} -vf "scale=2048:-1" -frames:v 1 ${shellQuote(outPath)}`,
+    { stdio: 'pipe', timeout: 30000 }
+  );
+
+  if (!fs.existsSync(outPath) || fs.statSync(outPath).size < 100) {
+    throw new Error(
+      'Failed to convert PDF to image. Ensure ffmpeg is installed.\n' +
+      'Run: winget install Gyan.FFmpeg'
+    );
   }
 
   return outPath;
@@ -238,7 +273,7 @@ RULES:
 - Include rests where appropriate
 - Use standard MusicXML clefs: treble for Soprano/Alto, bass for Tenor/Bass
 - Transcribe ALL notes visible in the image accurately
-- Preserve lyrics/syllables under the notes where visible
+- Preserve lyrics/syllables under the notes where possible
 
 IMPORTANT: Be extremely precise with pitch (C4 is middle C), duration values, and rhythm.`;
 }
@@ -246,7 +281,6 @@ IMPORTANT: Be extremely precise with pitch (C4 is middle C), duration values, an
 function extractMusicXML(
   content: string
 ): { ok: boolean; rawMusicXML?: string; confidence?: number; error?: string } {
-  // Try markdown code blocks first
   const xmlBlockMatch = content.match(/```(?:xml)?\s*([\s\S]*?)```/);
   let xml = xmlBlockMatch ? xmlBlockMatch[1].trim() : content.trim();
 
@@ -269,7 +303,6 @@ function extractMusicXML(
     return { ok: true, rawMusicXML: xml, confidence: 0.6 };
   }
 
-  // Try JSON format
   try {
     const jsonMatch = content.match(/```(?:json)?\s*({[\s\S]*?})\s*```/);
     const jsonStr = jsonMatch ? jsonMatch[1] : content;
