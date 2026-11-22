@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+uploads/*.xml
+uploads/*.musicxml
+*.wav
+data/*.db
+data/*.db-shm
+data/*.db-wal
+*.log

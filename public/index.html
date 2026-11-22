@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kwaya — Swahili Choral Score Assistant</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+  <h1>🎵 Kwaya</h1>
+  <span class="subtitle">Swahili choral score assistant</span>
+  <div class="status">
+    <span class="status-dot on" id="status-dot"></span>
+    <span id="status-text">ready</span>
+  </div>
+</header>
+
+<div class="layout">
+  <!-- Sidebar -->
+  <aside class="sidebar" id="sidebar">
+    <!-- Upload MusicXML -->
+    <div class="upload-area" id="upload-area-mxl" onclick="document.getElementById('file-input-mxl').click()">
+      <div class="icon">🎼</div>
+      <div class="hint">Upload MusicXML score</div>
+      <input type="file" id="file-input-mxl" accept=".xml,.mxl,.musicxml" onchange="handleUpload(event)">
+    </div>
+
+    <!-- Upload Image/PDF for OMR -->
+    <div class="upload-area omr-upload" id="upload-area-img" onclick="document.getElementById('file-input-img').click()">
+      <div class="icon">📷</div>
+      <div class="hint">Scan score from image/PDF</div>
+      <div class="sub-hint">PNG, JPG, TIFF, WebP, or PDF</div>
+      <input type="file" id="file-input-img" accept=".png,.jpg,.jpeg,.tiff,.tif,.bmp,.webp,.pdf" onchange="handleOmrUpload(event)">
+    </div>
+
+    <!-- OMR Progress -->
+    <div id="omr-progress" style="display:none; padding:8px 12px; background:var(--yellow-pale); border-radius:8px; font-size:12px;">
+      <div id="omr-status">Processing...</div>
+    </div>
+
+    <h2>📜 Scores</h2>
+    <div id="score-list">
+      <div class="empty-state" style="padding:20px;text-align:center;font-size:13px;">
+        No scores yet — upload one above
+      </div>
+    </div>
+
+    <div id="score-detail" style="display:none;">
+      <h2>ℹ️ Current Score</h2>
+      <div class="score-info" id="score-info"></div>
+    </div>
+  </aside>
+
+  <!-- Main chat area -->
+  <div class="main">
+    <div class="chat-area" id="chat-area">
+      <div class="empty-state">
+        <div class="icon">🎵</div>
+        <h2>Welcome to Kwaya</h2>
+        <p>
+          Upload a <strong>MusicXML</strong> choral score or <strong>scan an image/PDF</strong> of sheet music.<br>
+          I'll transcribe, verify, and let you hear every voice.<br>
+          Ask me anything about the music — or say <em>"play all voices"</em>!
+        </p>
+      </div>
+    </div>
+
+    <div class="input-area">
+      <textarea id="chat-input" rows="2" placeholder="Ask about the score, request playback, or theory help…"></textarea>
+      <button id="send-btn" onclick="sendMessage()">Send</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ──
+let currentScoreId = null;
+let scores = [];
+let listening = false;
+
+// ── Init ──
+async function init() {
+  await loadScores();
+  const status = await api('/api/status');
+  const dot = document.getElementById('status-dot');
+  const txt = document.getElementById('status-text');
+  if (status.features && status.features.omr) {
+    document.querySelector('.omr-upload .sub-hint').textContent = '✅ OMR ready · PNG, JPG, PDF';
+  }
+  if (status.agent === 'configured') {
+    dot.className = 'status-dot on';
+    txt.textContent = 'agent ready · human TTS ready';
+  } else {
+    dot.className = 'status-dot off';
+    txt.textContent = 'agent offline (no API key)';
+  }
+}
+
+// ── API helper ──
+async function api(url, opts = {}) {
+  try {
+    const resp = await fetch(url, {
+      headers: { 'Content-Type': 'application/json' },
+      ...opts,
+    });
+    return await resp.json();
+  } catch (e) {
+    return { error: e.message || 'Network error' };
+  }
+}
+
+// ── Load score list ──
+async function loadScores() {
+  const data = await api('/api/scores');
+  if (Array.isArray(data)) scores = data;
+  else scores = [];
+  renderScoreList();
+}
+
+function renderScoreList() {
+  const container = document.getElementById('score-list');
+  if (scores.length === 0) {
+    container.innerHTML = '<div class="empty-state" style="padding:20px;text-align:center;font-size:13px;">No scores yet — upload one above</div>';
+    return;
+  }
+  container.innerHTML = scores.map(s => `
+    <div class="score-card ${s.id === currentScoreId ? 'active' : ''}" onclick="selectScore(${s.id})">
+      <div class="title">${escapeHtml(s.title || s.filename)}</div>
+      <div class="meta">${escapeHtml(s.composer)} · ${s.key_sig} · ${s.time_sig}</div>
+      <div class="voices">
+        ${(s.voices || []).map(v => `<span class="voice-tag">${escapeHtml(v)}</span>`).join('')}
+      </div>
+    </div>
+  `).join('');
+}
+
+function escapeHtml(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Select score ──
+async function selectScore(id) {
+  currentScoreId = id;
+  renderScoreList();
+  
+  const detail = await api(`/api/scores/${id}`);
+  if (detail && detail.title) {
+    const info = document.getElementById('score-info');
+    const partsHtml = detail.parts.map(p => 
+      `<div><strong>${escapeHtml(p.name)}</strong>: ${p.noteCount} notes · range ${escapeHtml(p.range)}</div>`
+    ).join('');
+    info.innerHTML = `
+      <div><strong>${escapeHtml(detail.title)}</strong> · ${escapeHtml(detail.composer)}</div>
+      <div>Key: ${detail.key} · Time: ${detail.timeSig}</div>
+      <div style="margin-top:6px">${partsHtml}</div>
+    `;
+    document.getElementById('score-detail').style.display = 'block';
+  }
+  
+  addSystemMessage(`Switched to score #${id}. Ask me about it — or say "play all voices" to hear it!`);
+  
+  const resp = await api('/api/chat', {
+    method: 'POST',
+    body: JSON.stringify({ score_id: id, message: '/history' }),
+  });
+  if (resp && resp.message) {
+    addMessage('assistant', resp.message, resp.audio, resp.humanAudio);
+  }
+}
+
+// ── Upload MusicXML ──
+async function handleUpload(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  
+  const formData = new FormData();
+  formData.append('file', file);
+  
+  addSystemMessage(`📤 Uploading ${file.name}...`);
+  
+  try {
+    const resp = await fetch('/api/upload', { method: 'POST', body: formData });
+    const data = await resp.json();
+    
+    if (data.ok && data.score) {
+      addSystemMessage(`✅ Loaded: "${data.score.title}" — ${data.score.parts.length} voices`);
+      currentScoreId = data.score.id;
+      await loadScores();
+      await selectScore(currentScoreId);
+    } else {
+      addSystemMessage(`❌ ${data.error || 'Upload failed'}`);
+    }
+  } catch (e) {
+    addSystemMessage(`❌ Upload error: ${e.message}`);
+  }
+  event.target.value = '';
+}
+
+// ── Upload Image/PDF for OMR ──
+async function handleOmrUpload(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  
+  const formData = new FormData();
+  formData.append('file', file);
+  
+  addSystemMessage(`📷 Scanning "${file.name}" with AI vision...`);
+  showOmrProgress('Preparing image...');
+  
+  try {
+    const resp = await fetch('/api/omr', { method: 'POST', body: formData });
+    
+    if (resp.headers.get('content-type')?.includes('text/event-stream')) {
+      // SSE progress
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              
+              if (data.progress && data.progress !== 'Complete!') {
+                showOmrProgress(data.progress);
+              } else if (data.progress === 'Complete!') {
+                hideOmrProgress();
+              }
+              
+              if (data.ok && data.score) {
+                addSystemMessage(`✅ OMR complete: "${data.score.title}" — ${data.score.parts.length} voices`);
+                
+                // Show verification results
+                if (data.verification) {
+                  if (data.verification.passed) {
+                    addMessage('system', '✅ Verification passed — transcription matches the scanned image.');
+                  } else {
+                    addMessage('system', `⚠️ Verification found ${data.verification.issues.length} potential issues`);
+                    if (data.verification.issues.length > 0) {
+                      addMessage('assistant', 'Issues found:\n' + data.verification.issues.map(i => '• ' + i).join('\n'));
+                    }
+                  }
+                }
+                
+                currentScoreId = data.score.id;
+                await loadScores();
+                await selectScore(currentScoreId);
+              } else if (data.error) {
+                addSystemMessage(`❌ ${data.error}`);
+                hideOmrProgress();
+              }
+            } catch (e) {
+              console.log('SSE parse:', e);
+            }
+          }
+        }
+      }
+    } else {
+      // Regular JSON response
+      const data = await resp.json();
+      if (data.ok && data.score) {
+        addSystemMessage(`✅ OMR complete: "${data.score.title}" — ${data.score.parts.length} voices`);
+        currentScoreId = data.score.id;
+        await loadScores();
+        await selectScore(currentScoreId);
+      } else {
+        addSystemMessage(`❌ ${data.error || 'OMR failed'}`);
+      }
+      hideOmrProgress();
+    }
+  } catch (e) {
+    addSystemMessage(`❌ OMR error: ${e.message}`);
+    hideOmrProgress();
+  }
+  event.target.value = '';
+}
+
+// ── OMR Progress ──
+function showOmrProgress(text) {
+  const el = document.getElementById('omr-progress');
+  const status = document.getElementById('omr-status');
+  el.style.display = 'block';
+  status.textContent = text || 'Processing...';
+}
+
+function hideOmrProgress() {
+  document.getElementById('omr-progress').style.display = 'none';
+}
+
+// ── Chat ──
+async function sendMessage() {
+  const input = document.getElementById('chat-input');
+  const text = input.value.trim();
+  if (!text) return;
+  
+  input.value = '';
+  addMessage('user', text);
+  showTyping();
+  
+  const resp = await api('/api/chat', {
+    method: 'POST',
+    body: JSON.stringify({
+      score_id: currentScoreId,
+      message: text,
+    }),
+  });
+  
+  hideTyping();
+  
+  if (resp && resp.message) {
+    addMessage('assistant', resp.message, resp.audio, resp.humanAudio);
+  } else if (resp && resp.error) {
+    addMessage('assistant', `⚠️ ${resp.error}`);
+  } else {
+    addMessage('assistant', '⚠️ No response from agent. Is the API key configured?');
+  }
+}
+
+// ── Message management ──
+function addMessage(role, content, formantAudio, humanAudio) {
+  const chat = document.getElementById('chat-area');
+  
+  const empty = chat.querySelector('.empty-state');
+  if (empty) empty.remove();
+  
+  const div = document.createElement('div');
+  div.className = `message ${role}`;
+  
+  const formatted = formatContent(content);
+  div.innerHTML = formatted;
+  
+  // Show human TTS audio player (preferred)
+  if (humanAudio) {
+    const audioDiv = document.createElement('div');
+    audioDiv.className = 'audio-player human-voice';
+    audioDiv.innerHTML = `
+      <div style="font-size:11px;color:#2d8a2d;margin-bottom:4px;">🎤 Human Voice</div>
+      <audio controls src="${humanAudio}"></audio>
+    `;
+    div.appendChild(audioDiv);
+  }
+  
+  // Show formant audio as alternative
+  if (formantAudio && !humanAudio) {
+    const audioDiv = document.createElement('div');
+    audioDiv.className = 'audio-player';
+    audioDiv.innerHTML = `<audio controls src="${formantAudio}"></audio>`;
+    div.appendChild(audioDiv);
+  }
+  
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function addSystemMessage(text) {
+  const chat = document.getElementById('chat-area');
+  const div = document.createElement('div');
+  div.className = 'message system';
+  div.textContent = text;
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function formatContent(text) {
+  if (!text) return '';
+  let s = String(text).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  s = s.replace(/```(\w*)\n?([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
+  s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+  s = s.replace(/\n/g, '<br>');
+  return s;
+}
+
+function showTyping() {
+  const chat = document.getElementById('chat-area');
+  const typing = document.createElement('div');
+  typing.className = 'typing';
+  typing.id = 'typing-indicator';
+  typing.innerHTML = '<span class="dots"><span></span><span></span><span></span></span> thinking…';
+  chat.appendChild(typing);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function hideTyping() {
+  const el = document.getElementById('typing-indicator');
+  if (el) el.remove();
+}
+
+// ── Keyboard shortcut ──
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey && document.activeElement === document.getElementById('chat-input')) {
+    e.preventDefault();
+    sendMessage();
+  }
+});
+
+// ── Start ──
+init();
+</script>
+
+</body>
+</html>
