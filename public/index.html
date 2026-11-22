@@ -5,6 +5,13 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Kwaya — Swahili Choral Score Assistant</title>
 <link rel="stylesheet" href="style.css">
+<style>
+.play-btn { background:var(--green-mid); color:#fff; border:none; border-radius:8px; padding:6px 14px; font-size:12px; cursor:pointer; transition:all 0.2s; font-weight:500; }
+.play-btn:hover { background:var(--yellow-mid); color:#000; }
+.play-btn.solo { width:32px; height:32px; padding:0; border-radius:50%; font-size:11px; font-weight:600; }
+.play-btn:disabled { opacity:0.4; cursor:not-allowed; }
+#play-status { animation: pulse 1.5s infinite; }
+</style>
 </head>
 <body>
 
@@ -62,7 +69,7 @@
         <p>
           Upload a <strong>MusicXML</strong> choral score or <strong>scan an image/PDF</strong> of sheet music.<br>
           I'll transcribe, verify, and let you hear every voice.<br>
-          Ask me anything about the music — or say <em>"play all voices"</em>!
+          Ask me anything — or use the Play buttons to hear voices.
         </p>
       </div>
     </div>
@@ -78,7 +85,7 @@
 // ── State ──
 let currentScoreId = null;
 let scores = [];
-let listening = false;
+let currentScoreDetail = null;
 
 // ── Init ──
 async function init() {
@@ -109,6 +116,77 @@ async function api(url, opts = {}) {
   } catch (e) {
     return { error: e.message || 'Network error' };
   }
+}
+
+// ── Direct voice playback (bypasses agent) ──
+async function playAllVoices(scoreId) {
+  const detail = currentScoreDetail;
+  if (!detail || !detail.parts) {
+    setPlayStatus('No score data loaded');
+    return;
+  }
+  const notes = [];
+  const voiceParts = detail.parts;
+  const maxLen = Math.max(...voiceParts.map(p => p.sample ? p.sample.length : 0));
+  if (maxLen === 0) { setPlayStatus('No notes to play'); return; }
+  
+  for (let i = 0; i < maxLen; i++) {
+    for (const part of voiceParts) {
+      if (part.sample && part.sample[i] && !part.sample[i].rest) {
+        notes.push({
+          pitch: part.sample[i].pitch,
+          duration: 0.5,
+          lyric: part.sample[i].lyric || 'ah',
+          voice: part.name,
+        });
+      }
+    }
+  }
+  if (notes.length === 0) { setPlayStatus('No playable notes'); return; }
+  await sendToSynth(notes);
+}
+
+async function playVoice(scoreId, voiceName) {
+  const detail = currentScoreDetail;
+  if (!detail || !detail.parts) { setPlayStatus('No data'); return; }
+  const part = detail.parts.find(p => p.name === voiceName);
+  if (!part || !part.sample || part.sample.length === 0) { setPlayStatus(`No notes for ${voiceName}`); return; }
+  
+  const notes = part.sample.filter(n => !n.rest).map(n => ({
+    pitch: n.pitch,
+    duration: 0.5,
+    lyric: n.lyric || 'ah',
+    voice: voiceName,
+  }));
+  if (notes.length === 0) { setPlayStatus(`No playable notes for ${voiceName}`); return; }
+  await sendToSynth(notes);
+}
+
+async function sendToSynth(notes) {
+  setPlayStatus('Generating human voice audio...');
+  try {
+    const resp = await fetch('/api/synthesize-human', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notes }),
+    });
+    const data = await resp.json();
+    if (data.audio) {
+      setPlayStatus('Playing...');
+      const audio = new Audio(data.audio);
+      audio.onended = () => setPlayStatus('');
+      audio.play();
+    } else {
+      setPlayStatus(`Error: ${data.error || 'No audio'}`);
+    }
+  } catch (e) {
+    setPlayStatus(`Error: ${e.message}`);
+  }
+}
+
+function setPlayStatus(msg) {
+  const el = document.getElementById('play-status');
+  if (el) el.textContent = msg;
 }
 
 // ── Load score list ──
@@ -148,6 +226,7 @@ async function selectScore(id) {
   
   const detail = await api(`/api/scores/${id}`);
   if (detail && detail.title) {
+    currentScoreDetail = detail;
     const info = document.getElementById('score-info');
     const partsHtml = detail.parts.map(p => 
       `<div><strong>${escapeHtml(p.name)}</strong>: ${p.noteCount} notes · range ${escapeHtml(p.range)}</div>`
@@ -156,11 +235,19 @@ async function selectScore(id) {
       <div><strong>${escapeHtml(detail.title)}</strong> · ${escapeHtml(detail.composer)}</div>
       <div>Key: ${detail.key} · Time: ${detail.timeSig}</div>
       <div style="margin-top:6px">${partsHtml}</div>
+      <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;">
+        <button class="play-btn" onclick="playAllVoices(${id})">🔊 Play All Voices</button>
+        <button class="play-btn solo" onclick="playVoice(${id},'Soprano')">S</button>
+        <button class="play-btn solo" onclick="playVoice(${id},'Alto')">A</button>
+        <button class="play-btn solo" onclick="playVoice(${id},'Tenor')">T</button>
+        <button class="play-btn solo" onclick="playVoice(${id},'Bass')">B</button>
+      </div>
+      <div id="play-status" style="margin-top:6px;font-size:12px;color:var(--text-dim);"></div>
     `;
     document.getElementById('score-detail').style.display = 'block';
   }
   
-  addSystemMessage(`Switched to score #${id}. Ask me about it — or say "play all voices" to hear it!`);
+  addSystemMessage(`Switched to score #${id}. Ask me about it — or tap the Play buttons to hear voices!`);
   
   const resp = await api('/api/chat', {
     method: 'POST',
@@ -175,16 +262,12 @@ async function selectScore(id) {
 async function handleUpload(event) {
   const file = event.target.files[0];
   if (!file) return;
-  
   const formData = new FormData();
   formData.append('file', file);
-  
   addSystemMessage(`📤 Uploading ${file.name}...`);
-  
   try {
     const resp = await fetch('/api/upload', { method: 'POST', body: formData });
     const data = await resp.json();
-    
     if (data.ok && data.score) {
       addSystemMessage(`✅ Loaded: "${data.score.title}" — ${data.score.parts.length} voices`);
       currentScoreId = data.score.id;
@@ -203,56 +286,34 @@ async function handleUpload(event) {
 async function handleOmrUpload(event) {
   const file = event.target.files[0];
   if (!file) return;
-  
   const formData = new FormData();
   formData.append('file', file);
-  
   addSystemMessage(`📷 Scanning "${file.name}" with AI vision...`);
   showOmrProgress('Preparing image...');
-  
   try {
     const resp = await fetch('/api/omr', { method: 'POST', body: formData });
-    
     if (resp.headers.get('content-type')?.includes('text/event-stream')) {
-      // SSE progress
       const reader = resp.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
-      
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
-        
         for (const line of lines) {
           if (line.startsWith('data: ')) {
             try {
               const data = JSON.parse(line.slice(6));
-              
-              if (data.progress && data.progress !== 'Complete!') {
-                showOmrProgress(data.progress);
-              } else if (data.progress === 'Complete!') {
-                hideOmrProgress();
-              }
-              
+              if (data.progress && data.progress !== 'Complete!') showOmrProgress(data.progress);
+              else if (data.progress === 'Complete!') hideOmrProgress();
               if (data.ok && data.score) {
                 addSystemMessage(`✅ OMR complete: "${data.score.title}" — ${data.score.parts.length} voices`);
-                
-                // Show verification results
                 if (data.verification) {
-                  if (data.verification.passed) {
-                    addMessage('system', '✅ Verification passed — transcription matches the scanned image.');
-                  } else {
-                    addMessage('system', `⚠️ Verification found ${data.verification.issues.length} potential issues`);
-                    if (data.verification.issues.length > 0) {
-                      addMessage('assistant', 'Issues found:\n' + data.verification.issues.map(i => '• ' + i).join('\n'));
-                    }
-                  }
+                  if (data.verification.passed) addMessage('system', '✅ Verification passed.');
+                  else addMessage('system', `⚠️ ${data.verification.issues.length} potential issues found`);
                 }
-                
                 currentScoreId = data.score.id;
                 await loadScores();
                 await selectScore(currentScoreId);
@@ -260,23 +321,18 @@ async function handleOmrUpload(event) {
                 addSystemMessage(`❌ ${data.error}`);
                 hideOmrProgress();
               }
-            } catch (e) {
-              console.log('SSE parse:', e);
-            }
+            } catch (e) { console.log(e); }
           }
         }
       }
     } else {
-      // Regular JSON response
       const data = await resp.json();
       if (data.ok && data.score) {
-        addSystemMessage(`✅ OMR complete: "${data.score.title}" — ${data.score.parts.length} voices`);
+        addSystemMessage(`✅ OMR complete: "${data.score.title}"`);
         currentScoreId = data.score.id;
         await loadScores();
         await selectScore(currentScoreId);
-      } else {
-        addSystemMessage(`❌ ${data.error || 'OMR failed'}`);
-      }
+      } else addSystemMessage(`❌ ${data.error || 'OMR failed'}`);
       hideOmrProgress();
     }
   } catch (e) {
@@ -286,79 +342,50 @@ async function handleOmrUpload(event) {
   event.target.value = '';
 }
 
-// ── OMR Progress ──
 function showOmrProgress(text) {
   const el = document.getElementById('omr-progress');
-  const status = document.getElementById('omr-status');
+  document.getElementById('omr-status').textContent = text || 'Processing...';
   el.style.display = 'block';
-  status.textContent = text || 'Processing...';
 }
-
-function hideOmrProgress() {
-  document.getElementById('omr-progress').style.display = 'none';
-}
+function hideOmrProgress() { document.getElementById('omr-progress').style.display = 'none'; }
 
 // ── Chat ──
 async function sendMessage() {
   const input = document.getElementById('chat-input');
   const text = input.value.trim();
   if (!text) return;
-  
   input.value = '';
   addMessage('user', text);
   showTyping();
-  
   const resp = await api('/api/chat', {
     method: 'POST',
-    body: JSON.stringify({
-      score_id: currentScoreId,
-      message: text,
-    }),
+    body: JSON.stringify({ score_id: currentScoreId, message: text }),
   });
-  
   hideTyping();
-  
-  if (resp && resp.message) {
-    addMessage('assistant', resp.message, resp.audio, resp.humanAudio);
-  } else if (resp && resp.error) {
-    addMessage('assistant', `⚠️ ${resp.error}`);
-  } else {
-    addMessage('assistant', '⚠️ No response from agent. Is the API key configured?');
-  }
+  if (resp && resp.message) addMessage('assistant', resp.message, resp.audio, resp.humanAudio);
+  else if (resp && resp.error) addMessage('assistant', `⚠️ ${resp.error}`);
+  else addMessage('assistant', '⚠️ No response from agent.');
 }
 
-// ── Message management ──
 function addMessage(role, content, formantAudio, humanAudio) {
   const chat = document.getElementById('chat-area');
-  
   const empty = chat.querySelector('.empty-state');
   if (empty) empty.remove();
-  
   const div = document.createElement('div');
   div.className = `message ${role}`;
-  
-  const formatted = formatContent(content);
-  div.innerHTML = formatted;
-  
-  // Show human TTS audio player (preferred)
+  div.innerHTML = formatContent(content);
   if (humanAudio) {
-    const audioDiv = document.createElement('div');
-    audioDiv.className = 'audio-player human-voice';
-    audioDiv.innerHTML = `
-      <div style="font-size:11px;color:#2d8a2d;margin-bottom:4px;">🎤 Human Voice</div>
-      <audio controls src="${humanAudio}"></audio>
-    `;
-    div.appendChild(audioDiv);
+    const a = document.createElement('div');
+    a.className = 'audio-player human-voice';
+    a.innerHTML = '<div style="font-size:11px;color:#2d8a2d;margin-bottom:4px;">🎤 Human Voice</div><audio controls src="' + humanAudio + '"></audio>';
+    div.appendChild(a);
   }
-  
-  // Show formant audio as alternative
   if (formantAudio && !humanAudio) {
-    const audioDiv = document.createElement('div');
-    audioDiv.className = 'audio-player';
-    audioDiv.innerHTML = `<audio controls src="${formantAudio}"></audio>`;
-    div.appendChild(audioDiv);
+    const a = document.createElement('div');
+    a.className = 'audio-player';
+    a.innerHTML = '<audio controls src="' + formantAudio + '"></audio>';
+    div.appendChild(a);
   }
-  
   chat.appendChild(div);
   chat.scrollTop = chat.scrollHeight;
 }
@@ -392,13 +419,11 @@ function showTyping() {
   chat.appendChild(typing);
   chat.scrollTop = chat.scrollHeight;
 }
-
 function hideTyping() {
   const el = document.getElementById('typing-indicator');
   if (el) el.remove();
 }
 
-// ── Keyboard shortcut ──
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey && document.activeElement === document.getElementById('chat-input')) {
     e.preventDefault();
@@ -406,7 +431,6 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-// ── Start ──
 init();
 </script>
 
