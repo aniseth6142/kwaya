@@ -70,10 +70,10 @@ async function pdfToPng(pdfPath: string): Promise<string> {
   try {
     execSync(`python "${script}" "${pdfPath}" "${out}"`, { stdio: 'pipe', timeout: 30000 });
   } catch (e: any) {
-    throw new Error(`PDF→PNG: ${e.stderr?.toString() || e.message}`);
+    throw new Error(`PDF to PNG: ${e.stderr?.toString() || e.message}`);
   }
   if (!fs.existsSync(out) || fs.statSync(out).size < 500)
-    throw new Error('PDF→PNG empty output');
+    throw new Error('PDF to PNG empty output');
   return out;
 }
 
@@ -108,7 +108,7 @@ Soprano=treble, Alto=treble, Tenor=bass, Bass=bass clef. ALL voices, ALL notes, 
   return extractMusicXML(json?.choices?.[0]?.message?.content || '');
 }
 
-// Compact JSON → MusicXML converter
+// Compact JSON to MusicXML converter
 interface CN { p?: string; d: number; t: string; l?: string }
 interface CP { name: string; notes: CN[] }
 interface CS { title?: string; key?: number; time?: string; parts: CP[] }
@@ -117,14 +117,28 @@ function extractMusicXML(raw: string): { ok: boolean; rawMusicXML?: string; conf
   let text = raw;
   const block = raw.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
   if (block) text = block[1];
-  const fb = text.indexOf('{'), lb = text.lastIndexOf('}');
-  if (fb >= 0 && lb > fb) text = text.substring(fb, lb + 1);
+  const fb = text.indexOf('{');
+  if (fb < 0) return { ok: false, error: `No JSON in AI response. First 200: ${raw.substring(0, 200)}` };
+  text = text.substring(fb);
+
+  // Auto-close truncated JSON: count brackets and add missing closing ones
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const noStrings = text.replace(/"([^"]*)"/g, '""');
+    const openC = (noStrings.match(/\{/g) || []).length;
+    const closeC = (noStrings.match(/\}/g) || []).length;
+    const openB = (noStrings.match(/\[/g) || []).length;
+    const closeB = (noStrings.match(/\]/g) || []).length;
+    const needC = openC - closeC;
+    const needB = openB - closeB;
+    if (needC <= 0 && needB <= 0) break;
+    text += ']}'.repeat(needC) + ']'.repeat(needB);
+  }
+
   try {
     const d: CS = JSON.parse(text);
-    if (d.parts?.length) {
-      return { ok: true, rawMusicXML: jsonToXML(d), confidence: 0.8 };
-    }
+    if (d.parts?.length) return { ok: true, rawMusicXML: jsonToXML(d), confidence: 0.7 };
   } catch {}
+
   return { ok: false, error: `Not JSON. First 300: ${raw.substring(0, 300)}` };
 }
 
