@@ -91,7 +91,6 @@ async function preprocessImage(filePath: string): Promise<string> {
 // ── PDF → PNG via Python PyMuPDF ──────────────────────────────────
 
 async function pdfToPng(pdfPath: string): Promise<string> {
-  // __dirname is not available in ES modules — use process.cwd() instead
   const scriptPath = path.resolve(process.cwd(), 'scripts', 'pdf-to-png.py');
   const outPath = pdfPath.replace('.pdf', '_page1.png');
 
@@ -143,46 +142,86 @@ async function callVisionModel(
     }
 
     const json = await resp.json() as any;
-    return extractMusicXML(json?.choices?.[0]?.message?.content || '');
+    const raw = json?.choices?.[0]?.message?.content || '';
+    return extractMusicXML(raw);
   } catch (e: any) {
     return { ok: false, error: `Vision API call failed: ${e.message}` };
   }
 }
 
+// ── Prompt ─────────────────────────────────────────────────────────
+
 function buildVisionPrompt(): string {
-  return `You are a music transcription AI. Transcribe this sheet music image into valid MusicXML (score-partwise version 4.0).
+  return `You are a music transcription AI. Transcribe this sheet music image into valid MusicXML.
 
 RULES:
-- Output ONLY valid MusicXML markup, no explanations or markdown
+- Output ONLY valid MusicXML markup starting with <score-partwise version="4.0">
+- NO markdown, NO backticks, NO explanations, NO extra text before or after
+- The first character must be '<' and the last character must be '>'
 - Include part-list with Soprano, Alto, Tenor, Bass score-parts
 - Include attributes: divisions, key (fifths), time (beats/beat-type), clef
-- Each note must have: pitch (step, octave, optional alter), duration, type
+- Each note: pitch (step, octave, optional alter), duration, type
 - Include lyric for any visible text
 - Use treble clef for Soprano/Alto, bass clef for Tenor/Bass
 - Transcribe ALL notes. C4 is middle C. Be precise.`;
 }
 
-function extractMusicXML(content: string): { ok: boolean; rawMusicXML?: string; confidence?: number; error?: string } {
-  const block = content.match(/```(?:xml)?\s*([\s\S]*?)```/);
-  let xml = block ? block[1].trim() : content.trim();
+// ── XML extraction from AI response ───────────────────────────────
+
+function extractMusicXML(raw: string): { ok: boolean; rawMusicXML?: string; confidence?: number; error?: string } {
+  let xml = '';
+
+  // Strategy 1: ```xml ... ``` or ``` ... ``` containing MusicXML
+  const codeBlock = raw.match(/```(?:xml)?\s*([\s\S]*?)```/);
+  if (codeBlock) xml = codeBlock[1].trim();
+
+  // Strategy 2: Find first '<' and last '>' to extract raw XML
+  if (!xml.includes('<score-partwise') || !xml.includes('<measure')) {
+    const first = raw.indexOf('<');
+    const last = raw.lastIndexOf('>');
+    if (first >= 0 && last > first) {
+      const extracted = raw.substring(first, last + 1).trim();
+      if (extracted.includes('<score-partwise') || extracted.includes('<measure') || extracted.includes('<note'))
+        xml = extracted;
+    }
+  }
+
+  // Strategy 3: Try JSON-wrapped response
+  if (!xml.includes('<')) {
+    try {
+      const jm = raw.match(/```(?:json)?\s*({[\s\S]*?})\s*```/);
+      const data = JSON.parse(jm ? jm[1] : raw);
+      const fx = data.musicxml || data.musicXML || data.xml || data.score || '';
+      if (fx.includes('<'))
+        xml = fx;
+    } catch { /* not JSON */ }
+  }
+
+  // Debug: if we got nothing useful, show the raw response
+  if (!xml || !xml.includes('<')) {
+    return { ok: false, error: `AI did not return MusicXML. Raw response (first 300 chars): ${raw.substring(0, 300)}` };
+  }
+
+  // Wrap in score-partwise if needed
+  if (!xml.includes('<score-partwise')) {
+    if (xml.includes('<measure') || xml.includes('<note')) {
+      xml = `<score-partwise version="4.0"><part-list><score-part id="P1"><part-name>Soprano</part-name></score-part><score-part id="P2"><part-name>Alto</part-name></score-part><score-part id="P3"><part-name>Tenor</part-name></score-part><score-part id="P4"><part-name>Bass</part-name></score-part></part-list><part id="P1">${xml}</part></score-partwise>`;
+    }
+  }
+
+  // Validate starts with '<'
+  if (!xml.startsWith('<')) {
+    const firstTag = xml.indexOf('<');
+    if (firstTag >= 0) xml = xml.substring(firstTag);
+  }
 
   if (xml.includes('<score-partwise') && xml.includes('</score-partwise'))
     return { ok: true, rawMusicXML: xml, confidence: 0.85 };
 
-  if (xml.includes('<measure') && xml.includes('<note')) {
-    if (!xml.includes('<score-partwise'))
-      xml = `<score-partwise version="4.0"><part-list><score-part id="P1"><part-name>Soprano</part-name></score-part><score-part id="P2"><part-name>Alto</part-name></score-part><score-part id="P3"><part-name>Tenor</part-name></score-part><score-part id="P4"><part-name>Bass</part-name></score-part></part-list><part id="P1">${xml}</part></score-partwise>`;
+  if (xml.includes('<measure') && xml.includes('<note'))
     return { ok: true, rawMusicXML: xml, confidence: 0.6 };
-  }
 
-  try {
-    const jm = content.match(/```(?:json)?\s*({[\s\S]*?})\s*```/);
-    const data = JSON.parse(jm ? jm[1] : content);
-    const fx = data.musicxml || data.musicXML || data.xml;
-    if (fx && fx.includes('<score-partwise')) return { ok: true, rawMusicXML: fx, confidence: 0.7 };
-  } catch { /* not JSON */ }
-
-  return { ok: false, error: 'AI response did not contain valid MusicXML. Try a clearer image.' };
+  return { ok: false, error: `Extracted text does not contain MusicXML. Extracted (first 300 chars): ${xml.substring(0, 300)}` };
 }
 
 // ── Verification ───────────────────────────────────────────────────
